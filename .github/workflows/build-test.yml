@@ -1,4 +1,4 @@
-name: Cypress E2E
+name: Build and test
 
 on:
   push:
@@ -11,6 +11,8 @@ jobs:
   cypress:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: ci-cd-tests
 
     steps:
       - name: Checkout
@@ -21,11 +23,44 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend unit tests
+        working-directory: backend
+        run: npm test -- --runInBand
 
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          tags: ci-cd-tests-backend:latest
+          load: true
+          cache-from: type=gha,scope=backend-image
+          cache-to: type=gha,mode=max,scope=backend-image
+
+      - name: Build frontend image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          tags: ci-cd-tests-frontend:latest
+          load: true
+          cache-from: type=gha,scope=frontend-image
+          cache-to: type=gha,mode=max,scope=frontend-image
 
       - name: Start database
         run: docker compose up -d db
@@ -46,7 +81,7 @@ jobs:
           exit 1
 
       - name: Start backend
-        run: docker compose up -d backend
+        run: docker compose up -d --no-build backend
 
       - name: Wait for backend
         run: |
@@ -63,7 +98,7 @@ jobs:
           exit 1
 
       - name: Start frontend
-        run: docker compose up -d frontend
+        run: docker compose up -d --no-build frontend
 
       - name: Wait for frontend
         run: |
