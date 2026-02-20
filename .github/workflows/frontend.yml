@@ -1,0 +1,64 @@
+name: Frontend CI
+
+on:
+  workflow_call:
+    workflows:
+      - Backend CI
+    types:
+      - completed
+
+jobs:
+  frontend:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Start frontend
+        env:
+          NODE_ENV: test
+          NEXT_PUBLIC_API_URL: http://localhost:3000
+        run: |
+          nohup npm run start -- -p 4000 > frontend.log 2>&1 &
+
+      - name: Wait for frontend
+        run: |
+          for i in {1..60}; do
+            if curl -sf http://localhost:4000 >/dev/null; then
+              echo "Frontend is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Frontend failed to start"
+          echo "---- frontend.log ----"
+          cat frontend.log || true
+          exit 1
+
+      - name: Upload frontend log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-log
+          path: frontend/frontend.log

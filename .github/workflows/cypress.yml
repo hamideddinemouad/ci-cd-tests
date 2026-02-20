@@ -1,0 +1,121 @@
+name: Cypress CI
+
+on:
+  workflow_call:
+    workflows:
+      - Frontend CI
+    types:
+      - completed
+
+jobs:
+  cypress:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    name: Cypress
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          NODE_ENV: test
+          PORT: 3000
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_test
+        run: |
+          nohup npm run start:prod > backend.log 2>&1 &
+
+      - name: Wait for backend
+        run: |
+          for i in {1..60}; do
+            if curl -sf http://localhost:3000/health >/dev/null; then
+              echo "Backend is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to start"
+          echo "---- backend.log ----"
+          cat backend/backend.log || true
+          exit 1
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Start frontend
+        working-directory: frontend
+        env:
+          NODE_ENV: test
+          NEXT_PUBLIC_API_URL: http://localhost:3000
+        run: |
+          nohup npm run start -- -p 4000 > frontend.log 2>&1 &
+
+      - name: Wait for frontend
+        run: |
+          for i in {1..60}; do
+            if curl -sf http://localhost:4000 >/dev/null; then
+              echo "Frontend is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Frontend failed to start"
+          echo "---- frontend.log ----"
+          cat frontend/frontend.log || true
+          exit 1
+
+      - name: Run Cypress
+        working-directory: frontend
+        env:
+          CYPRESS_baseUrl: http://localhost:4000
+          CYPRESS_apiUrl: http://localhost:3000
+        run: npx cypress run
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            backend/backend.log
+            frontend/frontend.log
