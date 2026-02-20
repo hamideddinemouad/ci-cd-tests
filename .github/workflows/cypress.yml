@@ -14,11 +14,14 @@ jobs: # A workflow is made of one or more jobs
     runs-on: ubuntu-latest # The GitHub-hosted runner OS that executes the job
 
     steps: # A job is made of sequential steps
+      - name: Checkout repository # Pull your repo code into the runner
+        uses: actions/checkout@v5 # Official action to checkout the code
       - name: Setup Node.js # Install Node.js on the runner for Cypress + tooling
         uses: actions/setup-node@v4 # Official action to install Node.js
         with: # Inputs for the setup-node action
           node-version: 20 # Use Node 20 (common for modern Nest/Next/Cypress)
-          cache: npm # Enable npm cache to speed up repeated installs
+
+          
 
       - name: Create a Docker network for containers # Create a shared network so containers can resolve each other by name
         run: docker network create swish-ci # Creates a user-defined bridge network named swish-ci
