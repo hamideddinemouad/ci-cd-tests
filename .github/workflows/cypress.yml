@@ -1,116 +1,92 @@
-# .github/workflows/e2e-cypress.yml  # Workflow file location in your repo
+name: Cypress E2E
 
-name: E2E (Postgres + Nest + Next + Cypress) # Friendly workflow name shown in GitHub Actions UI
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
 
-on: # Defines what events trigger this workflow
-  push: # Run on pushes
-    branches: [main] # Only when pushing to the main branch
-  pull_request: # Run on pull requests
-    branches: [main] # Only when the PR targets the main branch
+jobs:
+  cypress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
-jobs: # A workflow is made of one or more jobs
-  e2e: # Job id (used internally in the workflow)
-    name: Run full stack + Cypress E2E # Job display name in GitHub Actions UI
-    runs-on: ubuntu-latest # The GitHub-hosted runner OS that executes the job
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    steps: # A job is made of sequential steps
-      - name: Checkout repository # Pull your repo code into the runner
-        uses: actions/checkout@v5 # Official action to checkout the code
-      - name: Setup Node.js # Install Node.js on the runner for Cypress + tooling
-        uses: actions/setup-node@v4 # Official action to install Node.js
-        with: # Inputs for the setup-node action
-          node-version: 20 # Use Node 20 (common for modern Nest/Next/Cypress)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-          
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
 
-      - name: Create a Docker network for containers # Create a shared network so containers can resolve each other by name
-        run: docker network create swish-ci # Creates a user-defined bridge network named swish-ci
+      - name: Start database
+        run: docker compose up -d db
 
-      - name: Start Postgres 16 container (port 5432 exposed) # Run Postgres so backend can connect to it
-        run: >- # Use a folded block so the long docker command stays readable
-          docker run -d --name db # Run detached and name the container "db"
-          --network swish-ci
-          -e POSTGRES_USER=postgres # Create default DB user
-          -e POSTGRES_PASSWORD=postgres # Set password for the default user
-          -e POSTGRES_DB=app # Create an initial database named "app"
-          -p 5432:5432 # Expose Postgres to the runner on localhost:5432
-          --health-cmd="pg_isready -U postgres -d app" # Healthcheck command to detect readiness
-          --health-interval=5s # How often to check health
-          --health-timeout=5s # Healthcheck timeout
-          --health-retries=20 # How many retries before marking unhealthy
-          postgres:16 # Use the official Postgres image, version 16
+      - name: Wait for database health
+        run: |
+          for i in {1..30}; do
+            status="$(docker inspect -f '{{.State.Health.Status}}' db 2>/dev/null || true)"
+            if [ "$status" = "healthy" ]; then
+              echo "Database is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
 
-      - name: Wait for Postgres to be ready # Block until Postgres healthcheck reports "healthy"
-        run: | # Multi-line shell script
-          for i in {1..60}; do # Try up to 60 times
-            STATUS="$(docker inspect -f '{{.State.Health.Status}}' db || true)" # Read container health status
-            if [ "$STATUS" = "healthy" ]; then echo "Postgres is healthy"; exit 0; fi # Exit when ready
-            echo "Waiting for Postgres... (status=$STATUS)"; sleep 2; # Otherwise wait then retry
-          done # End loop
-          echo "Postgres did not become healthy in time"; docker logs db; exit 1 # Fail the job and show logs
+          echo "Database did not become healthy in time"
+          docker compose logs db
+          exit 1
 
-      - name: Build Nest backend Docker image # Build the backend image from your backend Dockerfile
-        run: docker build -t swish-backend:ci ./backend # Build image tag swish-backend:ci from ./backend context
+      - name: Start backend
+        run: docker compose up -d backend
 
-      - name: Start Nest backend container (port 3000 exposed) # Run backend container so frontend/Cypress can call it
-        run: >- # Folded block for readability
-          docker run -d --name backend # Run detached and name it "backend"
-          --network swish-ci # Attach to swish-ci network so it can reach "db"
-          -p 3000:3000 # Expose backend to the runner on localhost:3000
-          -e NODE_ENV=test # Set environment to test (adjust if your app expects something else)
-          -e DATABASE_URL=postgres://postgres:postgres@db:5432/app # Point backend to Postgres using container DNS "db"
-          swish-backend:ci # The image built in the previous step
+      - name: Wait for backend
+        run: |
+          for i in {1..45}; do
+            if curl -fsS http://localhost:3000 >/dev/null; then
+              echo "Backend is reachable"
+              exit 0
+            fi
+            sleep 2
+          done
 
-      - name: Wait for backend to be reachable # Ensure backend is accepting connections before starting frontend/tests
-        run: | # Multi-line script
-          for i in {1..60}; do # Try up to 60 times
-            if curl -fsS http://localhost:3000/ >/dev/null 2>&1; then echo "Backend is up"; exit 0; fi # Health endpoint
-            echo "Waiting for backend on :3000..."; sleep 2; # Retry
-          done # End loop
-          echo "Backend did not come up in time"; docker logs backend; exit 1 # Fail and show logs
-        # NOTE: This assumes you have GET /health in Nest. If not, change to a real endpoint your API exposes. #
+          echo "Backend did not start in time"
+          docker compose logs backend
+          exit 1
 
-      - name: Build Next.js frontend Docker image # Build the frontend image from your frontend Dockerfile
-        run: docker build -t swish-frontend:ci ./frontend # Build image tag swish-frontend:ci from ./frontend context
-        # NOTE: If your Next app lives in a different folder, change ./frontend accordingly. #
+      - name: Start frontend
+        run: docker compose up -d frontend
 
-      - name: Start Next.js frontend container (port 4000 exposed) # Run frontend container so Cypress can test it
-        run: >- # Folded block for readability
-          docker run -d --name frontend # Run detached and name it "frontend"
-          --network swish-ci # Attach to swish-ci network (optional but keeps everything consistent)
-          -p 4000:4000 # Expose frontend to the runner on localhost:4000
-          -e NODE_ENV=test # Set environment to test
-          -e NEXT_PUBLIC_API_BASE_URL=http://localhost:3000 # Browser-side calls from the runner will target backend on localhost:3000
-          swish-frontend:ci # The image built in the previous step
+      - name: Wait for frontend
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://localhost:4000 >/dev/null; then
+              echo "Frontend is reachable"
+              exit 0
+            fi
+            sleep 2
+          done
 
-      - name: Wait for frontend to be reachable # Ensure the UI is serving before running Cypress
-        run: | # Multi-line script
-          for i in {1..60}; do # Try up to 60 times
-            if curl -fsS http://localhost:4000/ >/dev/null 2>&1; then echo "Frontend is up"; exit 0; fi # Check homepage loads
-            echo "Waiting for frontend on :4000..."; sleep 2; # Retry
-          done # End loop
-          echo "Frontend did not come up in time"; docker logs frontend; exit 1 # Fail and show logs
+          echo "Frontend did not start in time"
+          docker compose logs frontend
+          exit 1
 
-      - name: Install Cypress dependencies (frontend workspace) # Install deps where Cypress is defined (commonly in frontend)
-        working-directory: ./frontend # Run commands inside the frontend folder
-        run: npm ci # Clean install from package-lock.json for reproducible builds
+      - name: Run Cypress tests
+        working-directory: frontend
+        run: npx cypress run
 
-      - name: Run Cypress E2E against the running stack # Execute Cypress tests targeting the running frontend
-        working-directory: ./frontend # Run Cypress from the folder that contains cypress.config.* and node_modules
-        run: npx cypress run --config baseUrl=http://localhost:4000 # Run headless Cypress against the UI
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs
 
-      - name: Dump container logs on failure # Helpful debugging info if anything fails
-        if: failure() # Only run this step when a previous step failed
-        run: | # Multi-line script to print logs
-          echo "===== Postgres logs =====" # Label for readability
-          docker logs db || true # Print Postgres logs
-          echo "===== Backend logs =====" # Label for readability
-          docker logs backend || true # Print backend logs
-          echo "===== Frontend logs =====" # Label for readability
-          docker logs frontend || true # Print frontend logs
-
-      - name: Cleanup containers and network # Keep runner tidy after the job ends
-        if: always() # Run cleanup whether the job succeeded or failed
-        run: | # Multi-line cleanup script
-          docker rm -f frontend backend db || true # Stop and remove containers if they exist
-          docker network rm swish-ci || true # Remove the shared docker network
+      - name: Shutdown services
+        if: always()
+        run: docker compose down -v
