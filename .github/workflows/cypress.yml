@@ -1,11 +1,8 @@
 name: Cypress CI
 
 on:
-  workflow_run:
-    workflows:
-      - Frontend CI
-    types:
-      - completed
+  push:
+  pull_request:
 
 jobs:
   cypress:
